@@ -82,6 +82,12 @@ tcp:
   host: "0.0.0.0"
   port: 5101
 
+# 模拟发送参数：设备耗时区间（毫秒）和随机失败比例（0-1）；修改后立即生效。
+simulate:
+  delayMin: 100
+  delayMax: 500
+  failureRate: 0
+
 # 服务间调用与网关身份上下文验签配置；从现有服务复制，必须与 Gateway 保持一致。
 ${gateway}
 

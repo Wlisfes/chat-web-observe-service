@@ -2,7 +2,13 @@ import { Controller, Logger, UseFilters } from '@nestjs/common'
 import { Public } from '@wlisfes/chat-web-base-schema/auth'
 import { RpcExceptionFilter } from '@wlisfes/chat-web-base-schema/filters'
 import { MessagePattern, Payload } from '@nestjs/microservices'
-import { OBSERVE_PATTERN, type ObservePingPayload, type ObservePingResult } from '@wlisfes/chat-web-base-schema/observe'
+import {
+    OBSERVE_PATTERN,
+    type ObservePingPayload,
+    type ObservePingResult,
+    type ObserveSubmitPayload,
+    type ObserveSubmitResult
+} from '@wlisfes/chat-web-base-schema/observe'
 import { ObserveService } from '@/modules/observe/observe.service'
 
 /**
@@ -21,6 +27,16 @@ export class ObserveController {
     public async fetchObservePing(@Payload() payload: ObservePingPayload): Promise<ObservePingResult> {
         const result = this.observeService.ping(payload)
         this.logger.log(`收到 TCP 连通性检查：from=${result.from}`)
+        return result
+    }
+
+    @MessagePattern(OBSERVE_PATTERN.SUBMIT)
+    public async fetchObserveSubmit(@Payload() payload: ObserveSubmitPayload): Promise<ObserveSubmitResult> {
+        const startedAt = performance.now()
+        const result = await this.observeService.submit(payload)
+        const message = `模拟发送完成：msgId=${result.msgId}，msgKeyId=${payload?.msgKeyId}，simbankKeyId=${payload?.simbankKeyId}，portKeyId=${payload?.portKeyId}，sendStatus=${result.sendStatus}，statusCode=${result.statusCode}，耗时=${Math.round(performance.now() - startedAt)}ms`
+        if (result.sendStatus === 'success') this.logger.log(message)
+        else this.logger.warn(`${message}，原因=${result.statusMessage}`)
         return result
     }
 }
