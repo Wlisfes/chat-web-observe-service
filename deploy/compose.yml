@@ -1,0 +1,36 @@
+name: chat-web-service
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "30"
+
+services:
+  observe-service:
+    image: ${IMAGE:?IMAGE is required}
+    container_name: chat-web-observe-service
+    restart: unless-stopped
+    logging: *default-logging
+    init: true
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      PORT: 5100
+      OBSERVE_TCP_PORT: 5101
+      TZ: ${TZ:-Asia/Shanghai}
+    # HTTP 只用于健康检查和 Swagger；TCP 5101 只在 Docker 网络内供 Dispatch 访问，不映射到主机。
+    ports:
+      - '${HOST_BIND_IP:-127.0.0.1}:5100:5100'
+    expose:
+      - '5100'
+      - '5101'
+    networks:
+      - infrastructure
+    stop_grace_period: 20s
+
+networks:
+  infrastructure:
+    external: true
+    name: ${DOCKER_NETWORK:-chat-web-infrastructure}
