@@ -1,6 +1,6 @@
 {
     "name": "chat-web-observe-service",
-    "version": "1.0.1",
+    "version": "1.0.2",
     "description": "Chat Web Observe 模拟发送服务",
     "author": "Wlisfes",
     "private": true,
