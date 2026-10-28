@@ -92,14 +92,9 @@ simulate:
 queue:
   maxSize: 100
 
-# 发送回执推送到 Hooks；secret 必须与 Hooks Nacos simbank.secret 一致。未配置时不推送，Dispatch 只能靠超时查询获取结果。
-hooks:
-  url: "http://chat-web-hooks-service:5110/observe/simbank/webhook"
-  secret: ${scalar(environment.OBSERVE_HOOKS_SECRET?.trim() || 'replace-with-hooks-observe-secret')}
-  timeout: 5000
-
 # 服务间调用与网关身份上下文验签配置；从现有服务复制，必须与 Gateway 保持一致。
-${gateway}
+# gateway.hooks.simbank 拼到 gateway.feign.url 后面，回执和网关共用同一请求地址。
+${withSimbankWebhook(gateway)}
 
 # Observe 只读 SRM 设备短信记录、设备和端口；账号只授权这三张表的 SELECT。
 database:
@@ -112,6 +107,11 @@ database:
     charset: "utf8mb4"
     timezone: "+08:00"
 `
+}
+
+function withSimbankWebhook(gateway) {
+    if (/^\s+hooks:/m.test(gateway) && /simbank:/.test(gateway)) return gateway
+    return `${gateway.trimEnd()}\n  hooks:\n    simbank: /api/observe/simbank/webhook\n`
 }
 
 function validateObserveConfig(content) {

@@ -5,7 +5,7 @@ import { Repository } from 'typeorm'
 import { OBSERVE_SERVICE_NAME } from '@/modules/observe/observe.constants'
 import { ObserveSendLedger, type LedgerEntry } from '@/modules/observe/observe.ledger'
 import { ObservePortQueue } from '@/modules/observe/observe.queue'
-import { SimbankWebhookNotifier } from '@/modules/observe/observe.receipt'
+import { ObserveSubmitService } from '@/modules/observe/observe.submit'
 import * as SrmSchema from '@wlisfes/chat-web-base-schema/chat-web-srm-mysql'
 import * as ObserveSchema from '@wlisfes/chat-web-base-schema/observe'
 import * as ObserveSimulate from '@/modules/observe/observe.simulate'
@@ -37,7 +37,7 @@ export class ObserveService {
         @InjectRepository(SrmSchema.TbSrmSimbankMessage) private readonly messageRepository: Repository<SrmSchema.TbSrmSimbankMessage>,
         @InjectRepository(SrmSchema.TbSrmSimbank) private readonly simbankRepository: Repository<SrmSchema.TbSrmSimbank>,
         @InjectRepository(SrmSchema.TbSrmSimbankPort) private readonly portRepository: Repository<SrmSchema.TbSrmSimbankPort>,
-        private readonly receiptNotifier?: SimbankWebhookNotifier
+        private readonly submitService?: ObserveSubmitService
     ) {}
 
     /** 连通性检查：原样返回调用方名称，附带 Observe 当前时间。 */
@@ -110,7 +110,7 @@ export class ObserveService {
         return { admission: { ...this.admission(msgId, true, ObserveSchema.OBSERVE_SUBMIT_CODE.QUEUED, '已进入端口发送队列'), queueSize } }
     }
 
-    /** 端口队列中轮到本条短信：模拟设备耗时，写入设备侧结果并推送回执。 */
+    /** 端口队列中轮到本条短信：模拟设备耗时，写入设备侧结果并提交给 Hooks。 */
     private async send(target: SubmitTarget, entry: LedgerEntry): Promise<void> {
         entry.state = 'sending'
         const simulate = this.simulateOptions()
@@ -123,7 +123,7 @@ export class ObserveService {
         const message = `模拟发送完成：msgId=${target.msgId}，msgKeyId=${target.msgKeyId}，portKeyId=${target.portKeyId}，sendStatus=${result.sendStatus}，statusCode=${result.statusCode}`
         if (result.sendStatus === 'success') this.logger.log(message)
         else this.logger.warn(message)
-        this.receiptNotifier?.notify({
+        this.submitService?.submit({
             ...result,
             msgKeyId: target.msgKeyId,
             simbankKeyId: target.simbankKeyId,
