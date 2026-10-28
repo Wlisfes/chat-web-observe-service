@@ -21,3 +21,14 @@ export function resolveObserveSimulateOptions(config: unknown): ObserveSimulateO
     if (!Number.isFinite(failureRate) || failureRate < 0 || failureRate > 1) throw new Error('Nacos simulate.failureRate 必须在 0-1 之间')
     return { delayMin, delayMax, failureRate }
 }
+
+/** 端口发送队列默认上限：超过时拒绝，由 Dispatch 换端口提交。 */
+export const OBSERVE_PORT_QUEUE_DEFAULT_MAX_SIZE = 100
+
+/** 解析 Nacos `queue.maxSize`：每个端口最多排队的短信数。 */
+export function resolveObservePortQueueMaxSize(config: unknown): number {
+    const record = config && typeof config === 'object' && !Array.isArray(config) ? (config as Record<string, unknown>) : {}
+    const maxSize = Number(record.maxSize ?? OBSERVE_PORT_QUEUE_DEFAULT_MAX_SIZE)
+    if (!Number.isInteger(maxSize) || maxSize < 1) throw new Error('Nacos queue.maxSize 必须是不小于 1 的整数')
+    return maxSize
+}

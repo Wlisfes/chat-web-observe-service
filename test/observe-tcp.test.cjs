@@ -11,6 +11,8 @@ const { ObserveService } = require('../dist/modules/observe/observe.service')
 const { resolveObserveTcpOptions } = require('../dist/modules/observe/observe.constants')
 const { resolveObserveSimulateOptions } = require('../dist/modules/observe/observe.simulate')
 const { ObserveTcpServer } = require('../dist/modules/observe/observe.server')
+const { ObserveSendLedger } = require('../dist/modules/observe/observe.ledger')
+const { ObservePortQueue } = require('../dist/modules/observe/observe.queue')
 
 test('TCP 监听地址：环境变量优先，其次 Nacos tcp 节点，最后默认 0.0.0.0:5101', () => {
     assert.deepEqual(resolveObserveTcpOptions(undefined, {}), { host: '0.0.0.0', port: 5101 })
@@ -93,6 +95,161 @@ test('模拟参数非法时报错', () => {
     assert.throws(() => resolveObserveSimulateOptions({ failureRate: 2 }), /failureRate/)
 })
 
+test('同一短信ID重复提交只发送一次，返回第一次的结果', async () => {
+    let checks = 0
+    const data = fixtures()
+    const repos = [data.message, data.simbank, data.port].map(row => ({ findOne: async () => (checks++, row) }))
+    const observe = new ObserveService({ get: () => ({ delayMin: 20, delayMax: 20 }) }, ...repos)
+    const [first, concurrent] = await Promise.all([observe.submit(request()), observe.submit(request())])
+    const again = await observe.submit(request())
+    assert.equal(checks, 3, '只查询一次发送记录、设备和端口')
+    assert.deepEqual(concurrent, first)
+    assert.deepEqual(again, first)
+})
+
+test('查询设备发送状态立即返回：未收到过 found=false，排队/发送中返回 state，发送完成返回结果', async () => {
+    const observe = service({}, { delayMin: 30, delayMax: 30 })
+    assert.deepEqual(await observe.query({ msgId: 'm1' }), { msgId: 'm1', found: false })
+    const admission = await observe.enqueue(request())
+    assert.equal(admission.accepted, true)
+    assert.equal(admission.statusCode, 'QUEUED')
+    const pending = await observe.query({ msgId: 'm1' })
+    assert.equal(pending.found, true)
+    assert.ok(['queued', 'sending'].includes(pending.state))
+    assert.equal(pending.result, undefined)
+    const sent = await observe.submit(request())
+    const settled = await observe.query({ msgId: 'm1' })
+    assert.equal(settled.state, 'settled')
+    assert.deepEqual(settled.result, sent)
+    assert.deepEqual(await observe.query({ msgId: '' }), { msgId: '', found: false })
+})
+
+test('异步提交：发送条件不满足时拒绝受理，查询返回失败结果', async () => {
+    const observe = service({ port: { online: 'offline' } })
+    const admission = await observe.enqueue(request())
+    assert.equal(admission.accepted, false)
+    assert.equal(admission.statusCode, 'PORT_OFFLINE')
+    const queried = await observe.query({ msgId: 'm1' })
+    assert.equal(queried.state, 'settled')
+    assert.equal(queried.result.statusCode, 'PORT_OFFLINE')
+})
+
+test('异步提交：发送完成后推送回执，带发送记录和端口定位', async () => {
+    const receipts = []
+    const data = fixtures()
+    const observe = new ObserveService({ get: () => ({ delayMin: 0, delayMax: 0 }) }, ...repositories(data), {
+        notify: receipt => receipts.push(receipt)
+    })
+    await observe.submit(request())
+    assert.equal(receipts.length, 1)
+    assert.equal(receipts[0].msgId, 'm1')
+    assert.equal(receipts[0].msgKeyId, 99)
+    assert.equal(receipts[0].portKeyId, 2001)
+    assert.equal(receipts[0].sendStatus, 'success')
+})
+
+test('端口队列已满时拒绝为 PORT_BUSY，换端口或稍后可重新提交同一短信', async () => {
+    const config = { get: key => (key === 'queue' ? { maxSize: 1 } : { delayMin: 30, delayMax: 30 }) }
+    const rows = { 1: 'm1', 2: 'm2', 3: 'm3' }
+    const messageRepo = {
+        findOne: async ({ where }) => ({ keyId: where.keyId, msgId: rows[where.keyId], simbankKeyId: 3001, portKeyId: 2001 })
+    }
+    const [, simbankRepo, portRepo] = repositories(fixtures())
+    const observe = new ObserveService(config, messageRepo, simbankRepo, portRepo)
+    const first = await observe.enqueue(request({ msgId: 'm1', msgKeyId: 1 }))
+    // 第一条立即开始发送，离开排队；第二条排队；第三条超出上限。
+    await new Promise(resolve => setTimeout(resolve, 5))
+    const second = await observe.enqueue(request({ msgId: 'm2', msgKeyId: 2 }))
+    const third = await observe.enqueue(request({ msgId: 'm3', msgKeyId: 3 }))
+    assert.equal(first.accepted, true)
+    assert.equal(second.accepted, true)
+    assert.equal(third.accepted, false)
+    assert.equal(third.statusCode, 'PORT_BUSY')
+    assert.deepEqual(await observe.query({ msgId: 'm3' }), { msgId: 'm3', found: false }, '端口忙不记入设备发送记录')
+})
+
+test('端口队列：同一端口串行并按发送间隔发送，不同端口并行', async () => {
+    let now = 0
+    const sleeps = []
+    const order = []
+    const queue = new ObservePortQueue(
+        () => undefined,
+        () => now,
+        async ms => {
+            sleeps.push(ms)
+            now += ms
+        }
+    )
+    const job = (id, sendInterval) => ({ msgId: id, sendInterval, send: async () => order.push(id) })
+    queue.push(1, job('a', 3000), 10)
+    queue.push(1, job('b', 3000), 10)
+    queue.push(2, job('c', 3000), 10)
+    await new Promise(resolve => setTimeout(resolve, 10))
+    assert.deepEqual(order.sort(), ['a', 'b', 'c'])
+    assert.deepEqual(sleeps, [3000], '同一端口第二条等待 3000ms，第一条和其他端口不等待')
+    assert.equal(queue.push(3, job('d', 0), 0), undefined, '超过上限拒绝')
+})
+
+test('设备发送记录按有效期和上限淘汰，受理抛错或端口忙时不记录', async () => {
+    let now = 1000
+    const ledger = new ObserveSendLedger(100, 2, () => now)
+    const accepted = id => async () => ({ admission: { msgId: id, accepted: true, statusCode: 'QUEUED', statusMessage: '', time: '' } })
+    await ledger.admit('a', accepted('a'))
+    await ledger.admit('b', accepted('b'))
+    await ledger.admit('c', accepted('c'))
+    assert.equal(ledger.size, 2)
+    assert.equal(ledger.get('a'), undefined, '超出上限淘汰最早的记录')
+    now += 100
+    assert.equal(ledger.get('b'), undefined, '过期后按未收到处理')
+    await assert.rejects(() => ledger.admit('d', async () => Promise.reject(new Error('boom'))), /boom/)
+    assert.equal(ledger.get('d'), undefined)
+    await ledger.admit('e', async () => ({ admission: { msgId: 'e', accepted: false, statusCode: 'PORT_BUSY' }, retryable: true }))
+    assert.equal(ledger.get('e'), undefined)
+})
+
+test('回执推送：带签名，失败按间隔重试，未配置 hooks 时不推送', async () => {
+    const { ObserveReceiptNotifier, resolveObserveHooksOptions } = require('../dist/modules/observe/observe.receipt')
+    const { verifyObserveReceipt } = require('@wlisfes/chat-web-base-schema/observe')
+    assert.equal(resolveObserveHooksOptions(undefined), undefined)
+    assert.throws(() => resolveObserveHooksOptions({ url: 'http://x', secret: 's', timeout: 1 }), /hooks\.timeout/)
+    const calls = []
+    const notifier = new ObserveReceiptNotifier({ get: () => ({ url: 'http://hooks/observe/receipt', secret: 'secret' }) })
+    notifier.retryDelays = [1]
+    notifier.post = async (url, init) => {
+        calls.push({ url, init })
+        return { ok: calls.length > 1, status: calls.length > 1 ? 200 : 503 }
+    }
+    notifier.notify({
+        msgId: 'm1',
+        sendStatus: 'success',
+        statusCode: 'OK',
+        statusMessage: '',
+        sendTime: '',
+        msgKeyId: 1,
+        simbankKeyId: 2,
+        portKeyId: 3
+    })
+    await new Promise(resolve => setTimeout(resolve, 30))
+    assert.equal(calls.length, 2)
+    const { headers, body } = calls[1].init
+    assert.equal(
+        verifyObserveReceipt({
+            secret: 'secret',
+            timestamp: headers['x-observe-timestamp'],
+            signature: headers['x-observe-signature'],
+            body
+        }),
+        true
+    )
+    let posted = 0
+    const disabled = new ObserveReceiptNotifier({ get: () => undefined })
+    disabled.post = async () => (posted++, { ok: true })
+    disabled.notify({ msgId: 'm1' })
+    await new Promise(resolve => setTimeout(resolve, 5))
+    assert.equal(posted, 0)
+    notifier.onApplicationShutdown()
+})
+
 function freePort() {
     return new Promise((resolve, reject) => {
         const server = net.createServer().listen(0, '127.0.0.1', () => {
@@ -121,6 +278,11 @@ test('TCP 客户端可以调用 observe.ping 并收到响应', async () => {
         const sent = await firstValueFrom(client.send(OBSERVE_PATTERN.SUBMIT, request()))
         assert.equal(sent.sendStatus, 'success')
         assert.equal(sent.statusCode, 'OK')
+        const queried = await firstValueFrom(client.send(OBSERVE_PATTERN.QUERY, { msgId: 'm1' }))
+        assert.equal(queried.found, true)
+        assert.deepEqual(queried.result, sent)
+        const accepted = await firstValueFrom(client.send(OBSERVE_PATTERN.ENQUEUE, request()))
+        assert.equal(accepted.accepted, true, '已受理过的短信重复提交返回第一次的受理结果')
     } finally {
         await client.close()
         await app.close()

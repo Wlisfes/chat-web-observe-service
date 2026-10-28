@@ -1,6 +1,6 @@
 # chat-web-observe-service
 
-模拟发送服务。Dispatch 通过 TCP 调用 Observe，Observe 按 Dispatch 提交的参数读取 SRM 库做模拟发送。当前只打通 TCP 连接和响应（`observe.ping`），模拟发送接口后续接入。
+模拟发送服务。Dispatch 通过 TCP 异步提交（`observe.sms.enqueue`），Observe 只读 SRM 库校验发送条件后按端口排队发送（同一端口间隔通道 `sendInterval`），发送完成后 HTTP 推送回执到 `chat-web-hooks-service`，由 Hooks 转发到回执队列、Dispatch 写回发送记录。Observe 不写库。
 
 | 项目          | 生产（Docker）                  | 本地开发                                    |
 | ------------- | ------------------------------- | ------------------------------------------- |
