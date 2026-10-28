@@ -88,6 +88,16 @@ simulate:
   delayMax: 500
   failureRate: 0
 
+# 端口发送队列：每个端口最多排队的短信数，超过时 Dispatch 换端口提交。
+queue:
+  maxSize: 100
+
+# 发送回执推送到 Hooks；secret 必须与 Hooks Nacos observe.secret 一致。未配置时不推送，Dispatch 只能靠超时查询获取结果。
+hooks:
+  url: "http://chat-web-hooks-service:5110/observe/receipt"
+  secret: ${scalar(environment.OBSERVE_HOOKS_SECRET?.trim() || 'replace-with-hooks-observe-secret')}
+  timeout: 5000
+
 # 服务间调用与网关身份上下文验签配置；从现有服务复制，必须与 Gateway 保持一致。
 ${gateway}
 
