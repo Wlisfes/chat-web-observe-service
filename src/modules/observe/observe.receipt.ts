@@ -1,16 +1,16 @@
 import { Injectable, Logger, OnApplicationShutdown } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
 import {
-    OBSERVE_RECEIPT_SIGNATURE_HEADER,
-    OBSERVE_RECEIPT_TIMESTAMP_HEADER,
-    signObserveReceipt,
-    type ObserveReceiptPayload
+    SIMBANK_WEBHOOK_SIGNATURE_HEADER,
+    SIMBANK_WEBHOOK_TIMESTAMP_HEADER,
+    signSimbankWebhook,
+    type SimbankWebhookPayload
 } from '@wlisfes/chat-web-base-schema/observe'
 
 /** 回执推送失败后的重试间隔，毫秒；用完仍失败时放弃，由 Dispatch 回执超时检查按短信ID查询补偿。 */
-export const OBSERVE_RECEIPT_RETRY_DELAYS_MS = [1_000, 2_000, 5_000, 10_000, 30_000, 60_000]
+export const SIMBANK_WEBHOOK_RETRY_DELAYS_MS = [1_000, 2_000, 5_000, 10_000, 30_000, 60_000]
 /** 单次推送默认超时毫秒数。 */
-export const OBSERVE_RECEIPT_DEFAULT_TIMEOUT_MS = 5_000
+export const SIMBANK_WEBHOOK_DEFAULT_TIMEOUT_MS = 5_000
 
 export interface ObserveHooksOptions {
     url: string
@@ -24,7 +24,7 @@ export function resolveObserveHooksOptions(config: unknown): ObserveHooksOptions
     const url = typeof record.url === 'string' ? record.url.trim() : ''
     const secret = typeof record.secret === 'string' ? record.secret.trim() : ''
     if (!url || !secret) return undefined
-    const timeout = Number(record.timeout ?? OBSERVE_RECEIPT_DEFAULT_TIMEOUT_MS)
+    const timeout = Number(record.timeout ?? SIMBANK_WEBHOOK_DEFAULT_TIMEOUT_MS)
     if (!Number.isInteger(timeout) || timeout < 100) throw new Error('Nacos hooks.timeout 必须是不小于 100 的整数毫秒数')
     return { url, secret, timeout }
 }
@@ -34,12 +34,12 @@ export function resolveObserveHooksOptions(config: unknown): ObserveHooksOptions
  * 推送失败按退避间隔重试；重试用完或进程重启丢失的回执，由 Dispatch 回执超时检查按短信ID查询补偿。
  */
 @Injectable()
-export class ObserveReceiptNotifier implements OnApplicationShutdown {
-    private readonly logger = new Logger(ObserveReceiptNotifier.name)
+export class SimbankWebhookNotifier implements OnApplicationShutdown {
+    private readonly logger = new Logger(SimbankWebhookNotifier.name)
     private readonly timers = new Set<NodeJS.Timeout>()
     private warned = false
     /** 重试间隔；测试时可替换。 */
-    public retryDelays: number[] = OBSERVE_RECEIPT_RETRY_DELAYS_MS
+    public retryDelays: number[] = SIMBANK_WEBHOOK_RETRY_DELAYS_MS
     /** HTTP 推送实现；测试时可替换。 */
     public post: typeof fetch = (input, init) => fetch(input, init)
 
@@ -51,11 +51,11 @@ export class ObserveReceiptNotifier implements OnApplicationShutdown {
     }
 
     /** 推送回执，不抛错；首次失败后在后台重试。 */
-    public notify(receipt: ObserveReceiptPayload): void {
+    public notify(receipt: SimbankWebhookPayload): void {
         void this.attempt(receipt, 0)
     }
 
-    private async attempt(receipt: ObserveReceiptPayload, retry: number): Promise<void> {
+    private async attempt(receipt: SimbankWebhookPayload, retry: number): Promise<void> {
         const options = this.options()
         if (!options) return
         try {
@@ -78,15 +78,15 @@ export class ObserveReceiptNotifier implements OnApplicationShutdown {
         }
     }
 
-    private async send(options: ObserveHooksOptions, receipt: ObserveReceiptPayload): Promise<void> {
+    private async send(options: ObserveHooksOptions, receipt: SimbankWebhookPayload): Promise<void> {
         const body = JSON.stringify(receipt)
         const timestamp = String(Date.now())
         const response = await this.post(options.url, {
             method: 'POST',
             headers: {
                 'content-type': 'application/json',
-                [OBSERVE_RECEIPT_TIMESTAMP_HEADER]: timestamp,
-                [OBSERVE_RECEIPT_SIGNATURE_HEADER]: signObserveReceipt(options.secret, timestamp, body)
+                [SIMBANK_WEBHOOK_TIMESTAMP_HEADER]: timestamp,
+                [SIMBANK_WEBHOOK_SIGNATURE_HEADER]: signSimbankWebhook(options.secret, timestamp, body)
             },
             body,
             signal: AbortSignal.timeout(options.timeout)

@@ -92,9 +92,9 @@ simulate:
 queue:
   maxSize: 100
 
-# 发送回执推送到 Hooks；secret 必须与 Hooks Nacos observe.secret 一致。未配置时不推送，Dispatch 只能靠超时查询获取结果。
+# 发送回执推送到 Hooks；secret 必须与 Hooks Nacos simbank.secret 一致。未配置时不推送，Dispatch 只能靠超时查询获取结果。
 hooks:
-  url: "http://chat-web-hooks-service:5110/observe/receipt"
+  url: "http://chat-web-hooks-service:5110/observe/simbank/webhook"
   secret: ${scalar(environment.OBSERVE_HOOKS_SECRET?.trim() || 'replace-with-hooks-observe-secret')}
   timeout: 5000
 

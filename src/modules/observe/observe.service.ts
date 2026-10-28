@@ -17,7 +17,7 @@ import {
 import { OBSERVE_SERVICE_NAME } from '@/modules/observe/observe.constants'
 import { ObserveSendLedger, type LedgerEntry } from '@/modules/observe/observe.ledger'
 import { ObservePortQueue } from '@/modules/observe/observe.queue'
-import { ObserveReceiptNotifier } from '@/modules/observe/observe.receipt'
+import { SimbankWebhookNotifier } from '@/modules/observe/observe.receipt'
 import {
     OBSERVE_PORT_QUEUE_DEFAULT_MAX_SIZE,
     resolveObservePortQueueMaxSize,
@@ -52,7 +52,7 @@ export class ObserveService {
         @InjectRepository(SrmSchema.TbSrmSimbankMessage) private readonly messageRepository: Repository<SrmSchema.TbSrmSimbankMessage>,
         @InjectRepository(SrmSchema.TbSrmSimbank) private readonly simbankRepository: Repository<SrmSchema.TbSrmSimbank>,
         @InjectRepository(SrmSchema.TbSrmSimbankPort) private readonly portRepository: Repository<SrmSchema.TbSrmSimbankPort>,
-        private readonly receiptNotifier?: ObserveReceiptNotifier
+        private readonly receiptNotifier?: SimbankWebhookNotifier
     ) {}
 
     /** 连通性检查：原样返回调用方名称，附带 Observe 当前时间。 */

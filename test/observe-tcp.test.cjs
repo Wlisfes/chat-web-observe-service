@@ -208,12 +208,12 @@ test('设备发送记录按有效期和上限淘汰，受理抛错或端口忙�
 })
 
 test('回执推送：带签名，失败按间隔重试，未配置 hooks 时不推送', async () => {
-    const { ObserveReceiptNotifier, resolveObserveHooksOptions } = require('../dist/modules/observe/observe.receipt')
-    const { verifyObserveReceipt } = require('@wlisfes/chat-web-base-schema/observe')
+    const { SimbankWebhookNotifier, resolveObserveHooksOptions } = require('../dist/modules/observe/observe.receipt')
+    const { verifySimbankWebhook } = require('@wlisfes/chat-web-base-schema/observe')
     assert.equal(resolveObserveHooksOptions(undefined), undefined)
     assert.throws(() => resolveObserveHooksOptions({ url: 'http://x', secret: 's', timeout: 1 }), /hooks\.timeout/)
     const calls = []
-    const notifier = new ObserveReceiptNotifier({ get: () => ({ url: 'http://hooks/observe/receipt', secret: 'secret' }) })
+    const notifier = new SimbankWebhookNotifier({ get: () => ({ url: 'http://hooks/observe/simbank/webhook', secret: 'secret' }) })
     notifier.retryDelays = [1]
     notifier.post = async (url, init) => {
         calls.push({ url, init })
@@ -233,16 +233,16 @@ test('回执推送：带签名，失败按间隔重试，未配置 hooks 时不�
     assert.equal(calls.length, 2)
     const { headers, body } = calls[1].init
     assert.equal(
-        verifyObserveReceipt({
+        verifySimbankWebhook({
             secret: 'secret',
-            timestamp: headers['x-observe-timestamp'],
-            signature: headers['x-observe-signature'],
+            timestamp: headers['x-simbank-webhook-timestamp'],
+            signature: headers['x-simbank-webhook-signature'],
             body
         }),
         true
     )
     let posted = 0
-    const disabled = new ObserveReceiptNotifier({ get: () => undefined })
+    const disabled = new SimbankWebhookNotifier({ get: () => undefined })
     disabled.post = async () => (posted++, { ok: true })
     disabled.notify({ msgId: 'm1' })
     await new Promise(resolve => setTimeout(resolve, 5))
