@@ -1,9 +1,7 @@
-import { Injectable, Logger, OnApplicationShutdown } from '@nestjs/common'
+import { Injectable, Logger } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
 import { type SimbankWebhookPayload } from '@wlisfes/chat-web-base-schema/observe'
 
-/** 提交失败后的重试间隔，毫秒。用完仍失败则放弃，由调用方再次提交。 */
-export const OBSERVE_SUBMIT_RETRY_DELAYS_MS = [1_000, 2_000, 5_000, 10_000, 30_000, 60_000]
 /** 单次提交默认超时毫秒数。gateway.feign.timeout 未配置时使用。 */
 export const OBSERVE_SUBMIT_DEFAULT_TIMEOUT_MS = 5_000
 
@@ -37,50 +35,32 @@ function text(value: unknown): string | undefined {
     return typeof value === 'string' && value.trim() ? value.trim() : undefined
 }
 
-/** 发送完成后把结果提交给 Hooks。Hooks 是开放接口，不签名。提交失败按间隔重试，不抛给发送流程。 */
+/** 发送完成后把结果提交给 Hooks。成功回执由延迟队列调用 submitNow，失败回执走兼容入口。 */
 @Injectable()
-export class ObserveSubmitService implements OnApplicationShutdown {
+export class ObserveSubmitService {
     private readonly logger = new Logger(ObserveSubmitService.name)
-    private readonly timers = new Set<NodeJS.Timeout>()
     private warned = false
-    /** 重试间隔；测试时可替换。 */
-    public retryDelays: number[] = OBSERVE_SUBMIT_RETRY_DELAYS_MS
     /** HTTP 提交实现；测试时可替换。 */
     public post: typeof fetch = (input, init) => fetch(input, init)
 
     constructor(private readonly configService: ConfigService) {}
 
-    public onApplicationShutdown(): void {
-        for (const timer of this.timers) clearTimeout(timer)
-        this.timers.clear()
-    }
-
-    /** 提交发送结果，不抛错；失败后在后台重试。 */
+    /** 兼容入口：后台推送，失败只记录日志。 */
     public submit(payload: SimbankWebhookPayload): void {
-        void this.submitWithRetry(payload, 0)
+        void this.submitNow(payload).catch(error => {
+            this.logger.error(`发送结果提交失败：msgId=${payload.msgId}，原因=${this.errorMessage(error)}`)
+        })
     }
 
-    private async submitWithRetry(payload: SimbankWebhookPayload, retry: number): Promise<void> {
+    /** 立即推送，失败时直接抛错，供延迟队列决定重新入队或进入死信。 */
+    public async submitNow(payload: SimbankWebhookPayload): Promise<void> {
         const options = this.options()
-        if (!options) return
-        try {
-            await this.postResult(options, payload)
-            if (retry > 0) this.logger.log(`发送结果重试提交成功：msgId=${payload.msgId}，第 ${retry} 次重试`)
-        } catch (error) {
-            const delay = this.retryDelays[retry]
-            const reason = error instanceof Error ? error.message : String(error)
-            if (delay === undefined) {
-                this.logger.error(`发送结果提交失败，已放弃：msgId=${payload.msgId}，原因=${reason}`)
-                return
-            }
-            this.logger.warn(`发送结果提交失败，${delay}ms 后重试：msgId=${payload.msgId}，原因=${reason}`)
-            const timer = setTimeout(() => {
-                this.timers.delete(timer)
-                void this.submitWithRetry(payload, retry + 1)
-            }, delay)
-            timer.unref?.()
-            this.timers.add(timer)
-        }
+        if (!options) throw new Error('未配置有效的 Hooks 回执地址')
+        await this.postResult(options, payload)
+    }
+
+    private errorMessage(error: unknown): string {
+        return error instanceof Error ? error.message : String(error)
     }
 
     private async postResult(options: ObserveSubmitOptions, payload: SimbankWebhookPayload): Promise<void> {

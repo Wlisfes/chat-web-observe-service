@@ -6,6 +6,7 @@ import { OBSERVE_SERVICE_NAME } from '@/modules/observe/observe.constants'
 import { ObserveSendLedger, type LedgerEntry } from '@/modules/observe/observe.ledger'
 import { ObservePortQueue } from '@/modules/observe/observe.queue'
 import { ObserveSubmitService } from '@/modules/observe/observe.submit'
+import { ObserveDeliveredQueueService } from '@/modules/observe/observe.delivered.queue'
 import * as SrmSchema from '@wlisfes/chat-web-base-schema/chat-web-srm-mysql'
 import * as ObserveSchema from '@wlisfes/chat-web-base-schema/observe'
 import * as ObserveSimulate from '@/modules/observe/observe.simulate'
@@ -37,7 +38,8 @@ export class ObserveService {
         @InjectRepository(SrmSchema.TbSrmSimbankMessage) private readonly messageRepository: Repository<SrmSchema.TbSrmSimbankMessage>,
         @InjectRepository(SrmSchema.TbSrmSimbank) private readonly simbankRepository: Repository<SrmSchema.TbSrmSimbank>,
         @InjectRepository(SrmSchema.TbSrmSimbankPort) private readonly portRepository: Repository<SrmSchema.TbSrmSimbankPort>,
-        private readonly submitService?: ObserveSubmitService
+        private readonly submitService?: ObserveSubmitService,
+        private readonly deliveredQueueService?: ObserveDeliveredQueueService
     ) {}
 
     /** 连通性检查：原样返回调用方名称，附带 Observe 当前时间。 */
@@ -123,12 +125,15 @@ export class ObserveService {
         const message = `模拟发送完成：msgId=${target.msgId}，msgKeyId=${target.msgKeyId}，portKeyId=${target.portKeyId}，sendStatus=${result.sendStatus}，statusCode=${result.statusCode}`
         if (result.sendStatus === 'success') this.logger.log(message)
         else this.logger.warn(message)
-        this.submitService?.submit({
+        const receipt = {
             ...result,
             msgKeyId: target.msgKeyId,
             simbankKeyId: target.simbankKeyId,
             portKeyId: target.portKeyId
-        })
+        }
+        // 成功回执先进入延迟队列，失败回执保持立即推送。
+        if (this.deliveredQueueService) await this.deliveredQueueService.enqueueSuccess(receipt)
+        else this.submitService?.submit(receipt)
     }
 
     private target(msgId: string, payload: Partial<ObserveSchema.ObserveSubmitPayload> | undefined): SubmitTarget | undefined {

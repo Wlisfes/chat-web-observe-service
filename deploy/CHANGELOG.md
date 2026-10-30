@@ -1,5 +1,19 @@
 # Observe 部署变更记录
 
+## 2026-10-30：成功回执改为 MQ 延迟队列
+
+- 变更内容：路由键从 `observe.receipt` 改为 `observe.delivered`。成功回执不再由消费者等待，而是进入按整秒划分的 TTL 延迟队列，到期后死信投递到 `chat.observe.delivered`，消费者立即推送 Hooks。推送失败重新进入延迟队列，最多 5 次，耗尽后进入 `chat.observe.delivered.dead`。
+- 机器侧操作：无需改 Nacos。若环境里已有旧队列 `chat.observe.receipt`，部署后不再消费，确认无积压后可删除。
+- 验证命令：`yarn test`；发送成功后日志出现“成功回执已进入延迟队列”，1-30 秒后出现“送达回执已推送到 Hooks”。
+- 回滚方法：回退 Observe 镜像；新延迟队列中的未到期消息不会被旧消费者处理。
+
+## 2026-10-30：成功回执延迟 1-30 秒推送
+
+- 变更内容：Observe 新增 RabbitMQ 成功回执队列 `chat.observe.receipt`，发送成功后先入队；消费者随机等待 1-30 秒再推送到 Hooks `/observe/simbank/webhook`。推送失败最多重试 5 次，耗尽后进入死信 `chat.observe.receipt.dead`。
+- 机器侧操作：Observe Nacos 增加 `rabbitmq`（复用 Dispatch 的 `/chat-sms` 账号）并设置 `prefetch: 10`；无需修改 Hooks 或 Dispatch。
+- 验证命令：`yarn test`；发送成功后日志出现“成功回执已入队列”，1-30 秒后出现“延迟回执已推送到 Hooks”。
+- 回滚方法：回退 Observe 镜像并删除 Nacos `rabbitmq` 节点；队列消息保留，可在恢复后继续消费。
+
 ## 2026-10-27：新增模拟发送服务
 
 - 影响机器：`chat-home-server`。

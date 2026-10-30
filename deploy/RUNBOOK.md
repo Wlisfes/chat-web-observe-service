@@ -10,6 +10,7 @@
 | Nacos Data ID / 服务名 | `chat-web-observe-service.yaml` / `chat-web-observe-service` |
 | 数据库配置键           | `database.chat-web-srm`（只读）                              |
 | 数据库账号             | `chat_web_observe_service`                                   |
+| RabbitMQ               | `/chat-sms`，账号复用 Dispatch                              |
 | 部署目录               | `/opt/chat-web-observe-service`                              |
 
 ## 首次部署前准备
@@ -34,3 +35,10 @@ docker logs --tail 50 chat-web-dispatch-service | grep 'Observe TCP'
 ```
 
 Dispatch 启动后会调用一次 `observe.ping`，日志出现 `Observe TCP 已连通` 表示链路正常。
+
+RabbitMQ 延迟队列验证：成功回执进入 `chat.observe.delivered.delay.*`，到期后投递到 `observe.delivered`，消费者不再等待。
+
+```sh
+docker logs --tail 100 chat-web-observe-service | grep '成功回执已进入延迟队列'
+docker logs --tail 100 chat-web-observe-service | grep '送达回执已推送到 Hooks'
+```
