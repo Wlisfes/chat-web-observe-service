@@ -138,7 +138,7 @@ test('异步提交：发送完成后推送回执，带发送记录和端口定�
     const receipts = []
     const data = fixtures()
     const observe = new ObserveService({ get: () => ({ delayMin: 0, delayMax: 0 }) }, ...repositories(data), {
-        notify: receipt => receipts.push(receipt)
+        submit: payload => receipts.push(payload)
     })
     await observe.submit(request())
     assert.equal(receipts.length, 1)
@@ -207,19 +207,30 @@ test('设备发送记录按有效期和上限淘汰，受理抛错或端口忙�
     assert.equal(ledger.get('e'), undefined)
 })
 
-test('回执推送：带签名，失败按间隔重试，未配置 hooks 时不推送', async () => {
-    const { ObserveReceiptNotifier, resolveObserveHooksOptions } = require('../dist/modules/observe/observe.receipt')
-    const { verifyObserveReceipt } = require('@wlisfes/chat-web-base-schema/observe')
-    assert.equal(resolveObserveHooksOptions(undefined), undefined)
-    assert.throws(() => resolveObserveHooksOptions({ url: 'http://x', secret: 's', timeout: 1 }), /hooks\.timeout/)
+test('提交发送结果：共用网关地址，失败按间隔重试，未配置 gateway.hooks.simbank 时不提交', async () => {
+    const { ObserveSubmitService, resolveObserveSubmitOptions } = require('../dist/modules/observe/observe.submit')
+    assert.equal(resolveObserveSubmitOptions(undefined), undefined)
+    assert.equal(
+        resolveObserveSubmitOptions({ feign: { url: 'https://chat-web.lisfes.cn' }, hooks: { simbank: '/api/observe/simbank/webhook' } })
+            .url,
+        'https://chat-web.lisfes.cn/api/observe/simbank/webhook'
+    )
+    assert.equal(
+        resolveObserveSubmitOptions({ hooks: { simbank: 'https://chat-web.lisfes.cn/api/observe/simbank/webhook' } }).url,
+        'https://chat-web.lisfes.cn/api/observe/simbank/webhook'
+    )
+    assert.throws(() => resolveObserveSubmitOptions({ hooks: { simbank: '/api/observe/simbank/webhook' } }), /gateway\.feign\.url/)
+    assert.throws(() => resolveObserveSubmitOptions({ feign: { timeout: 1 }, hooks: { simbank: 'http://x' } }), /gateway\.feign\.timeout/)
     const calls = []
-    const notifier = new ObserveReceiptNotifier({ get: () => ({ url: 'http://hooks/observe/receipt', secret: 'secret' }) })
+    const notifier = new ObserveSubmitService({
+        get: () => ({ feign: { url: 'https://chat-web.lisfes.cn', timeout: 3000 }, hooks: { simbank: '/api/observe/simbank/webhook' } })
+    })
     notifier.retryDelays = [1]
     notifier.post = async (url, init) => {
         calls.push({ url, init })
         return { ok: calls.length > 1, status: calls.length > 1 ? 200 : 503 }
     }
-    notifier.notify({
+    notifier.submit({
         msgId: 'm1',
         sendStatus: 'success',
         statusCode: 'OK',
@@ -231,20 +242,13 @@ test('回执推送：带签名，失败按间隔重试，未配置 hooks 时不�
     })
     await new Promise(resolve => setTimeout(resolve, 30))
     assert.equal(calls.length, 2)
-    const { headers, body } = calls[1].init
-    assert.equal(
-        verifyObserveReceipt({
-            secret: 'secret',
-            timestamp: headers['x-observe-timestamp'],
-            signature: headers['x-observe-signature'],
-            body
-        }),
-        true
-    )
+    assert.deepEqual(calls[1].init.headers, { 'content-type': 'application/json' })
+    assert.equal(calls[1].url, 'https://chat-web.lisfes.cn/api/observe/simbank/webhook')
+    assert.equal(JSON.parse(calls[1].init.body).msgId, 'm1')
     let posted = 0
-    const disabled = new ObserveReceiptNotifier({ get: () => undefined })
+    const disabled = new ObserveSubmitService({ get: () => undefined })
     disabled.post = async () => (posted++, { ok: true })
-    disabled.notify({ msgId: 'm1' })
+    disabled.submit({ msgId: 'm1' })
     await new Promise(resolve => setTimeout(resolve, 5))
     assert.equal(posted, 0)
     notifier.onApplicationShutdown()

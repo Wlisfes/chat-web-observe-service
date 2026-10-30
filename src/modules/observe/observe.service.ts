@@ -2,31 +2,16 @@ import { Injectable, Logger } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
 import { InjectRepository } from '@nestjs/typeorm'
 import { Repository } from 'typeorm'
-import * as SrmSchema from '@wlisfes/chat-web-base-schema/chat-web-srm-mysql'
-import {
-    OBSERVE_SUBMIT_CODE,
-    type ObserveEnqueueResult,
-    type ObservePingPayload,
-    type ObservePingResult,
-    type ObserveQueryPayload,
-    type ObserveQueryResult,
-    type ObserveSubmitCode,
-    type ObserveSubmitPayload,
-    type ObserveSubmitResult
-} from '@wlisfes/chat-web-base-schema/observe'
 import { OBSERVE_SERVICE_NAME } from '@/modules/observe/observe.constants'
 import { ObserveSendLedger, type LedgerEntry } from '@/modules/observe/observe.ledger'
 import { ObservePortQueue } from '@/modules/observe/observe.queue'
-import { ObserveReceiptNotifier } from '@/modules/observe/observe.receipt'
-import {
-    OBSERVE_PORT_QUEUE_DEFAULT_MAX_SIZE,
-    resolveObservePortQueueMaxSize,
-    resolveObserveSimulateOptions,
-    type ObserveSimulateOptions
-} from '@/modules/observe/observe.simulate'
+import { ObserveSubmitService } from '@/modules/observe/observe.submit'
+import * as SrmSchema from '@wlisfes/chat-web-base-schema/chat-web-srm-mysql'
+import * as ObserveSchema from '@wlisfes/chat-web-base-schema/observe'
+import * as ObserveSimulate from '@/modules/observe/observe.simulate'
 
 /** 校验不通过时的结果码和说明。 */
-type Rejection = { code: ObserveSubmitCode; message: string }
+type Rejection = { code: ObserveSchema.ObserveSubmitCode; message: string }
 
 /** 已校验的提交参数。 */
 interface SubmitTarget {
@@ -52,11 +37,11 @@ export class ObserveService {
         @InjectRepository(SrmSchema.TbSrmSimbankMessage) private readonly messageRepository: Repository<SrmSchema.TbSrmSimbankMessage>,
         @InjectRepository(SrmSchema.TbSrmSimbank) private readonly simbankRepository: Repository<SrmSchema.TbSrmSimbank>,
         @InjectRepository(SrmSchema.TbSrmSimbankPort) private readonly portRepository: Repository<SrmSchema.TbSrmSimbankPort>,
-        private readonly receiptNotifier?: ObserveReceiptNotifier
+        private readonly submitService?: ObserveSubmitService
     ) {}
 
     /** 连通性检查：原样返回调用方名称，附带 Observe 当前时间。 */
-    public ping(payload: Partial<ObservePingPayload> | undefined): ObservePingResult {
+    public ping(payload: Partial<ObserveSchema.ObservePingPayload> | undefined): ObserveSchema.ObservePingResult {
         return {
             service: OBSERVE_SERVICE_NAME,
             from: typeof payload?.from === 'string' && payload.from.trim() ? payload.from.trim() : 'unknown',
@@ -68,15 +53,15 @@ export class ObserveService {
      * 异步提交：校验发送条件后加入端口发送队列并立即返回受理结果，发送完成后通过 Hooks 推送回执。
      * 同一短信ID只受理一次，重复提交返回第一次的受理结果；端口队列已满时拒绝，Dispatch 换端口后可再次提交。
      */
-    public async enqueue(payload: Partial<ObserveSubmitPayload> | undefined): Promise<ObserveEnqueueResult> {
+    public async enqueue(payload: Partial<ObserveSchema.ObserveSubmitPayload> | undefined): Promise<ObserveSchema.ObserveEnqueueResult> {
         const msgId = text(payload?.msgId)
         // 缺少短信ID无法去重，直接按参数错误处理，不记入设备发送记录。
-        if (!msgId) return this.admission(msgId, false, OBSERVE_SUBMIT_CODE.INVALID_PAYLOAD, '请求缺少 msgId')
+        if (!msgId) return this.admission(msgId, false, ObserveSchema.OBSERVE_SUBMIT_CODE.INVALID_PAYLOAD, '请求缺少 msgId')
         return this.ledger.admit(msgId, entry => this.admit(msgId, payload, entry))
     }
 
     /** 同步提交（兼容旧版 Dispatch）：受理后等待本条短信发送完成再返回结果。 */
-    public async submit(payload: Partial<ObserveSubmitPayload> | undefined): Promise<ObserveSubmitResult> {
+    public async submit(payload: Partial<ObserveSchema.ObserveSubmitPayload> | undefined): Promise<ObserveSchema.ObserveSubmitResult> {
         const admission = await this.enqueue(payload)
         const entry = admission.msgId ? this.ledger.get(admission.msgId) : undefined
         if (entry && (admission.accepted || entry.result)) return entry.done
@@ -84,7 +69,7 @@ export class ObserveService {
     }
 
     /** 按短信ID查询设备侧状态，立即返回：没有记录表示设备未收到过这条短信。 */
-    public async query(payload: Partial<ObserveQueryPayload> | undefined): Promise<ObserveQueryResult> {
+    public async query(payload: Partial<ObserveSchema.ObserveQueryPayload> | undefined): Promise<ObserveSchema.ObserveQueryResult> {
         const msgId = text(payload?.msgId)
         const entry = msgId ? this.ledger.get(msgId) : undefined
         if (!entry) return { msgId, found: false }
@@ -101,13 +86,15 @@ export class ObserveService {
     /** 校验发送条件并加入端口队列；同一短信ID只会执行一次。 */
     private async admit(
         msgId: string,
-        payload: Partial<ObserveSubmitPayload> | undefined,
+        payload: Partial<ObserveSchema.ObserveSubmitPayload> | undefined,
         entry: LedgerEntry
-    ): Promise<{ admission: ObserveEnqueueResult; retryable?: boolean }> {
+    ): Promise<{ admission: ObserveSchema.ObserveEnqueueResult; retryable?: boolean }> {
         const target = this.target(msgId, payload)
         const maxSize = this.queueMaxSize()
         if (target && this.queue.size(target.portKeyId) >= maxSize) return this.busy(msgId, target.portKeyId)
-        const rejection = target ? await this.check(target) : { code: OBSERVE_SUBMIT_CODE.INVALID_PAYLOAD, message: INVALID_MESSAGE }
+        const rejection = target
+            ? await this.check(target)
+            : { code: ObserveSchema.OBSERVE_SUBMIT_CODE.INVALID_PAYLOAD, message: INVALID_MESSAGE }
         if (rejection) {
             // 发送条件不满足：记为设备侧已有失败结果，重复提交和查询都返回同一结果。
             entry.resolve(this.result(msgId, 'failed', rejection.code, rejection.message))
@@ -120,23 +107,23 @@ export class ObserveService {
         )
         if (queueSize === undefined) return this.busy(msgId, target.portKeyId)
         entry.accepted = true
-        return { admission: { ...this.admission(msgId, true, OBSERVE_SUBMIT_CODE.QUEUED, '已进入端口发送队列'), queueSize } }
+        return { admission: { ...this.admission(msgId, true, ObserveSchema.OBSERVE_SUBMIT_CODE.QUEUED, '已进入端口发送队列'), queueSize } }
     }
 
-    /** 端口队列中轮到本条短信：模拟设备耗时，写入设备侧结果并推送回执。 */
+    /** 端口队列中轮到本条短信：模拟设备耗时，写入设备侧结果并提交给 Hooks。 */
     private async send(target: SubmitTarget, entry: LedgerEntry): Promise<void> {
         entry.state = 'sending'
         const simulate = this.simulateOptions()
         await this.delay(simulate)
         const result =
             Math.random() < simulate.failureRate
-                ? this.result(target.msgId, 'failed', OBSERVE_SUBMIT_CODE.SIMULATED_FAILURE, '模拟设备发送失败')
-                : this.result(target.msgId, 'success', OBSERVE_SUBMIT_CODE.OK, '模拟设备发送成功')
+                ? this.result(target.msgId, 'failed', ObserveSchema.OBSERVE_SUBMIT_CODE.SIMULATED_FAILURE, '模拟设备发送失败')
+                : this.result(target.msgId, 'success', ObserveSchema.OBSERVE_SUBMIT_CODE.OK, '模拟设备发送成功')
         entry.resolve(result)
         const message = `模拟发送完成：msgId=${target.msgId}，msgKeyId=${target.msgKeyId}，portKeyId=${target.portKeyId}，sendStatus=${result.sendStatus}，statusCode=${result.statusCode}`
         if (result.sendStatus === 'success') this.logger.log(message)
         else this.logger.warn(message)
-        this.receiptNotifier?.notify({
+        this.submitService?.submit({
             ...result,
             msgKeyId: target.msgKeyId,
             simbankKeyId: target.simbankKeyId,
@@ -144,7 +131,7 @@ export class ObserveService {
         })
     }
 
-    private target(msgId: string, payload: Partial<ObserveSubmitPayload> | undefined): SubmitTarget | undefined {
+    private target(msgId: string, payload: Partial<ObserveSchema.ObserveSubmitPayload> | undefined): SubmitTarget | undefined {
         const msgKeyId = Number(payload?.msgKeyId)
         const simbankKeyId = Number(payload?.simbankKeyId)
         const portKeyId = Number(payload?.portKeyId)
@@ -154,9 +141,14 @@ export class ObserveService {
         return { msgId, msgKeyId, simbankKeyId, portKeyId, sendInterval }
     }
 
-    private busy(msgId: string, portKeyId: number): { admission: ObserveEnqueueResult; retryable: boolean } {
+    private busy(msgId: string, portKeyId: number): { admission: ObserveSchema.ObserveEnqueueResult; retryable: boolean } {
         return {
-            admission: this.admission(msgId, false, OBSERVE_SUBMIT_CODE.PORT_BUSY, `端口发送队列已满：portKeyId=${portKeyId}`),
+            admission: this.admission(
+                msgId,
+                false,
+                ObserveSchema.OBSERVE_SUBMIT_CODE.PORT_BUSY,
+                `端口发送队列已满：portKeyId=${portKeyId}`
+            ),
             retryable: true
         }
     }
@@ -175,64 +167,70 @@ export class ObserveService {
             })
         ])
         if (!message || message.msgId !== msgId)
-            return { code: OBSERVE_SUBMIT_CODE.MESSAGE_NOT_FOUND, message: '发送记录不存在或短信ID不匹配' }
+            return { code: ObserveSchema.OBSERVE_SUBMIT_CODE.MESSAGE_NOT_FOUND, message: '发送记录不存在或短信ID不匹配' }
         if (message.simbankKeyId !== simbankKeyId || message.portKeyId !== portKeyId) {
-            return { code: OBSERVE_SUBMIT_CODE.MESSAGE_MISMATCH, message: '发送记录的设备或端口与请求不一致' }
+            return { code: ObserveSchema.OBSERVE_SUBMIT_CODE.MESSAGE_MISMATCH, message: '发送记录的设备或端口与请求不一致' }
         }
-        if (!simbank) return { code: OBSERVE_SUBMIT_CODE.SIMBANK_NOT_FOUND, message: '设备不存在' }
+        if (!simbank) return { code: ObserveSchema.OBSERVE_SUBMIT_CODE.SIMBANK_NOT_FOUND, message: '设备不存在' }
         if (simbank.status !== SrmSchema.TbSrmSimbankStatus.ENABLE)
-            return { code: OBSERVE_SUBMIT_CODE.SIMBANK_DISABLED, message: '设备已停用' }
+            return { code: ObserveSchema.OBSERVE_SUBMIT_CODE.SIMBANK_DISABLED, message: '设备已停用' }
         if (simbank.online !== SrmSchema.TbSrmSimbankOnline.ONLINE)
-            return { code: OBSERVE_SUBMIT_CODE.SIMBANK_OFFLINE, message: '设备离线' }
+            return { code: ObserveSchema.OBSERVE_SUBMIT_CODE.SIMBANK_OFFLINE, message: '设备离线' }
         if (!port || port.simbankKeyId !== simbankKeyId)
-            return { code: OBSERVE_SUBMIT_CODE.PORT_NOT_FOUND, message: '端口不存在或不属于该设备' }
+            return { code: ObserveSchema.OBSERVE_SUBMIT_CODE.PORT_NOT_FOUND, message: '端口不存在或不属于该设备' }
         if (port.status !== SrmSchema.TbSrmSimbankPortStatus.ENABLE)
-            return { code: OBSERVE_SUBMIT_CODE.PORT_DISABLED, message: '端口已停用' }
+            return { code: ObserveSchema.OBSERVE_SUBMIT_CODE.PORT_DISABLED, message: '端口已停用' }
         if (port.insertStatus !== SrmSchema.TbSrmSimbankPortInsertStatus.INSERTED) {
-            return { code: OBSERVE_SUBMIT_CODE.PORT_REMOVED, message: '端口未插卡' }
+            return { code: ObserveSchema.OBSERVE_SUBMIT_CODE.PORT_REMOVED, message: '端口未插卡' }
         }
         if (port.activateStatus !== SrmSchema.TbSrmSimbankPortActivateStatus.ACTIVE) {
-            return { code: OBSERVE_SUBMIT_CODE.PORT_INACTIVE, message: '端口未激活' }
+            return { code: ObserveSchema.OBSERVE_SUBMIT_CODE.PORT_INACTIVE, message: '端口未激活' }
         }
-        if (port.online !== SrmSchema.TbSrmSimbankPortOnline.ONLINE) return { code: OBSERVE_SUBMIT_CODE.PORT_OFFLINE, message: '端口离线' }
+        if (port.online !== SrmSchema.TbSrmSimbankPortOnline.ONLINE)
+            return { code: ObserveSchema.OBSERVE_SUBMIT_CODE.PORT_OFFLINE, message: '端口离线' }
         return undefined
     }
 
     /** 每次读取最新配置，Nacos 修改 simulate 后无需重启。 */
-    private simulateOptions(): ObserveSimulateOptions {
+    private simulateOptions(): ObserveSimulate.ObserveSimulateOptions {
         try {
-            return resolveObserveSimulateOptions(this.configService.get('simulate'))
+            return ObserveSimulate.resolveObserveSimulateOptions(this.configService.get('simulate'))
         } catch (error) {
             this.logger.warn(`模拟发送配置无效，使用默认值：${error instanceof Error ? error.message : String(error)}`)
-            return resolveObserveSimulateOptions(undefined)
+            return ObserveSimulate.resolveObserveSimulateOptions(undefined)
         }
     }
 
     /** 每次读取最新配置，Nacos 修改 queue.maxSize 后无需重启。 */
     private queueMaxSize(): number {
         try {
-            return resolveObservePortQueueMaxSize(this.configService.get('queue'))
+            return ObserveSimulate.resolveObservePortQueueMaxSize(this.configService.get('queue'))
         } catch (error) {
             this.logger.warn(`端口队列配置无效，使用默认值：${error instanceof Error ? error.message : String(error)}`)
-            return OBSERVE_PORT_QUEUE_DEFAULT_MAX_SIZE
+            return ObserveSimulate.OBSERVE_PORT_QUEUE_DEFAULT_MAX_SIZE
         }
     }
 
-    private async delay({ delayMin, delayMax }: ObserveSimulateOptions): Promise<void> {
+    private async delay({ delayMin, delayMax }: ObserveSimulate.ObserveSimulateOptions): Promise<void> {
         const ms = delayMin + Math.floor(Math.random() * (delayMax - delayMin + 1))
         if (ms > 0) await new Promise(resolve => setTimeout(resolve, ms))
     }
 
     private result(
         msgId: string,
-        sendStatus: ObserveSubmitResult['sendStatus'],
-        statusCode: ObserveSubmitCode,
+        sendStatus: ObserveSchema.ObserveSubmitResult['sendStatus'],
+        statusCode: ObserveSchema.ObserveSubmitCode,
         statusMessage: string
-    ): ObserveSubmitResult {
+    ): ObserveSchema.ObserveSubmitResult {
         return { msgId, sendStatus, statusCode, statusMessage, sendTime: new Date().toISOString() }
     }
 
-    private admission(msgId: string, accepted: boolean, statusCode: ObserveSubmitCode, statusMessage: string): ObserveEnqueueResult {
+    private admission(
+        msgId: string,
+        accepted: boolean,
+        statusCode: ObserveSchema.ObserveSubmitCode,
+        statusMessage: string
+    ): ObserveSchema.ObserveEnqueueResult {
         return { msgId, accepted, statusCode, statusMessage, time: new Date().toISOString() }
     }
 }
