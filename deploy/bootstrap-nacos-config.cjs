@@ -71,7 +71,9 @@ function topLevelBlock(content, name) {
 
 function createObserveConfig(source, environment = process.env) {
     const gateway = topLevelBlock(source, 'gateway')
-    if (!gateway) throw new Error('来源 Nacos 配置缺少 gateway，无法生成 Observe 配置')
+    const rabbitmq = topLevelBlock(source, 'rabbitmq')
+    if (!gateway || !rabbitmq) throw new Error('来源 Nacos 配置缺少 gateway 或 rabbitmq，无法生成 Observe 配置')
+    if (!/vhost:\s*"?\/chat-sms"?/.test(rabbitmq)) throw new Error('来源 RabbitMQ 配置 vhost 必须为 /chat-sms')
     return `# 服务监听配置。
 server:
   # 容器内 HTTP 监听端口：健康检查和 Swagger。
@@ -96,6 +98,9 @@ queue:
 # gateway.hooks.simbank 拼到 gateway.feign.url 后面，回执和网关共用同一请求地址。
 ${withSimbankWebhook(gateway)}
 
+# 成功回执先写入 /chat-sms 的延迟队列，到期后由 Observe 推送到 Hooks；账号从 Dispatch 复制。
+${withPrefetchTen(rabbitmq)}
+
 # Observe 只读 SRM 设备短信记录、设备和端口；账号只授权这三张表的 SELECT。
 database:
   chat-web-srm:
@@ -109,6 +114,11 @@ database:
 `
 }
 
+function withPrefetchTen(rabbitmq) {
+    if (/^\s+prefetch:/m.test(rabbitmq)) return rabbitmq.replace(/prefetch:\s*\d+/, 'prefetch: 10')
+    return `${rabbitmq.trimEnd()}` + "\n  prefetch: 10"
+}
+
 function withSimbankWebhook(gateway) {
     if (/^\s+hooks:/m.test(gateway) && /simbank:/.test(gateway)) return gateway
     return `${gateway.trimEnd()}\n  hooks:\n    simbank: /api/observe/simbank/webhook\n`
@@ -118,6 +128,8 @@ function validateObserveConfig(content) {
     if (!/^\s+port:\s*5100\s*$/m.test(content)) throw new Error('Observe Nacos 配置缺少 server.port: 5100')
     if (!/^tcp:/m.test(content) || !/^\s+port:\s*5101\s*$/m.test(content)) throw new Error('Observe Nacos 配置缺少 tcp.port: 5101')
     if (!content.includes('chat-web-srm:')) throw new Error('Observe Nacos 配置缺少 database.chat-web-srm')
+    if (!/^rabbitmq:/m.test(content) || !content.includes('/chat-sms')) throw new Error('Observe Nacos 配置缺少 rabbitmq（vhost /chat-sms）')
+    if (!/prefetch:\s*10\b/.test(content)) throw new Error('Observe RabbitMQ prefetch 必须为 10')
     if (!content.includes('service_token:') || !content.includes('secret:')) throw new Error('Observe Nacos 配置缺少网关凭据')
     return content
 }

@@ -14,6 +14,12 @@ gateway:
     maxAgeSeconds: 60
 redis:
   host: chat-web-redis
+rabbitmq:
+  host: chat-web-rabbitmq
+  port: 5672
+  username: observe
+  password: pass
+  vhost: /chat-sms
 `
 
 test('Observe Nacos 配置包含 HTTP 5100、TCP 5101 和 SRM 只读库连接', () => {
@@ -23,6 +29,9 @@ test('Observe Nacos 配置包含 HTTP 5100、TCP 5101 和 SRM 只读库连接', 
     assert.match(content, /tcp:\n  host: "0.0.0.0"\n  port: 5101/)
     assert.match(content, /username: "chat_web_observe_service"/)
     assert.doesNotMatch(content, /redis:/)
+    assert.match(content, /rabbitmq:\n  host: chat-web-rabbitmq/)
+    assert.match(content, /vhost: \/chat-sms/)
+    assert.match(content, /prefetch: 10/)
 })
 
 test('缺少 TCP 配置时校验失败', () => {
