@@ -131,7 +131,7 @@ export class ObserveService {
             simbankKeyId: target.simbankKeyId,
             portKeyId: target.portKeyId
         }
-        // 成功回执先进入延迟队列，失败回执保持立即推送。
+        // 成功回执立即推送；送达回执进入延迟队列。失败回执保持立即推送。
         if (this.deliveredQueueService) await this.deliveredQueueService.enqueueSuccess(receipt)
         else this.submitService?.submit(receipt)
     }

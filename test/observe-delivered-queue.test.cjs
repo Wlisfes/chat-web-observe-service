@@ -79,24 +79,31 @@ test('回执拓扑声明送达队列、死信队列和 TTL 延迟队列', async 
     )
 })
 
-test('成功回执进入延迟队列，失败回执立即推送', async () => {
+test('发送成功立即推送 success，送达回执进入延迟队列；失败回执立即推送', async () => {
     const published = []
     const submitted = []
     const service = new ObserveDeliveredQueueService(
         { publish: async (...args) => published.push(args), consume: async () => undefined },
-        { submitNow: async payload => submitted.push(payload) }
+        {
+            submit: payload => submitted.push(payload),
+            submitNow: async payload => submitted.push(payload)
+        }
     )
     service.randomDelay = () => 5_000
     await service.enqueueSuccess(receipt)
+    assert.equal(submitted.length, 1)
+    assert.equal(submitted[0].sendStatus, 'success')
     assert.equal(published.length, 1)
     assert.equal(published[0][0], '')
     assert.equal(published[0][1], 'chat.observe.delivered.delay.5000')
-    assert.equal(published[0][2], receipt)
+    assert.equal(published[0][2].sendStatus, 'delivered')
+    assert.equal(published[0][2].msgId, 'm1')
+    assert.equal(published[0][2].statusMessage, '模拟设备已送达')
     assert.equal(published[0][3].messageId, 'm1')
     assert.equal(published[0][3].headers, undefined)
     await service.enqueueSuccess({ ...receipt, sendStatus: 'failed' })
-    assert.equal(submitted.length, 1)
-    assert.equal(submitted[0].sendStatus, 'failed')
+    assert.equal(submitted.length, 2)
+    assert.equal(submitted[1].sendStatus, 'failed')
 })
 
 test('消费者立即推送，失败后重新进入延迟队列，耗尽后进入死信', async () => {
