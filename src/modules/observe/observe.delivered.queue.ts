@@ -18,8 +18,8 @@ export function randomObserveDeliveredDelay(random: () => number = Math.random):
 type DeliveredReceipt = SimbankWebhookPayload & { attempts?: number }
 
 /**
- * 成功回执写入 RabbitMQ 延迟队列，由队列 TTL 到期后投递到 observe.delivered。
- * 消费者不再等待，收到即可推送 Hooks。
+ * 送达回执写入 RabbitMQ 延迟队列，TTL 到期后投递到 observe.delivered。
+ * 消费者不再等待，收到后把 sendStatus=delivered 推送到 Hooks。
  */
 @Injectable()
 export class ObserveDeliveredQueueService implements OnApplicationBootstrap {
@@ -61,14 +61,22 @@ export class ObserveDeliveredQueueService implements OnApplicationBootstrap {
         this.logger.log(`已订阅送达回执队列：${topology.OBSERVE_DELIVERED_QUEUE}`)
     }
 
-    /** 只把成功回执放入延迟队列；失败回执仍立即推送。 */
+    /**
+     * 发送成功立即推送 success；送达回执改成 delivered 后进入 MQ 延迟队列。
+     * 失败回执不进入延迟队列，仍立即推送。
+     */
     public async enqueueSuccess(receipt: SimbankWebhookPayload): Promise<void> {
         if (receipt.sendStatus !== 'success') {
             await this.submitService.submitNow(receipt)
             return
         }
-        const delay = await this.publishDelayed(receipt)
-        this.logger.log(`成功回执已进入延迟队列：msgId=${receipt.msgId}，delay=${delay}ms`)
+        this.submitService.submit(receipt)
+        const delay = await this.publishDelayed({
+            ...receipt,
+            sendStatus: 'delivered',
+            statusMessage: '模拟设备已送达'
+        })
+        this.logger.log(`送达回执已进入延迟队列：msgId=${receipt.msgId}，delay=${delay}ms`)
     }
 
     /** 测试可替换，必须返回已声明的延迟梯度。 */

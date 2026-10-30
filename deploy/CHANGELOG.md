@@ -1,5 +1,12 @@
 # Observe 部署变更记录
 
+## 2026-10-30：延迟回执改为已送达状态
+
+- 变更内容：发送成功仍立即推送 `success`。延迟队列中的回执改为 `sendStatus=delivered`，到期后由 Hooks 写成已送达。此前只改了路由键，消息体仍是 `success`，所以不会产生已送达数据。
+- 机器侧操作：仍需 Nacos `chat-web-observe-service.yaml` 包含 `rabbitmq`（vhost `/chat-sms`，`prefetch: 10`）。已写成 success 的历史记录不会自动补成 delivered。
+- 验证命令：`yarn test`；发送成功后 1-30 秒，发送记录 `send_status` 变为 `delivered`。
+- 回滚方法：回退 Observe 镜像；已写入的已送达状态保留。
+
 ## 2026-10-30：成功回执改为 MQ 延迟队列
 
 - 变更内容：路由键从 `observe.receipt` 改为 `observe.delivered`。成功回执不再由消费者等待，而是进入按整秒划分的 TTL 延迟队列，到期后死信投递到 `chat.observe.delivered`，消费者立即推送 Hooks。推送失败重新进入延迟队列，最多 5 次，耗尽后进入 `chat.observe.delivered.dead`。

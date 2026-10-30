@@ -1,6 +1,6 @@
 # chat-web-observe-service
 
-模拟发送服务。Dispatch 通过 TCP 异步提交（`observe.sms.enqueue`），Observe 只读 SRM 库校验发送条件后按端口排队发送（同一端口间隔通道 `sendInterval`），成功回执先写入 RabbitMQ 延迟队列，到期后投递到 `observe.delivered`，再 HTTP 推送到 `chat-web-hooks-service`；失败回执仍立即推送。Hooks 再转发到回执队列，由 Dispatch 写回发送记录。Observe 不写库。
+模拟发送服务。Dispatch 通过 TCP 异步提交（`observe.sms.enqueue`），Observe 只读 SRM 库校验发送条件后按端口排队发送（同一端口间隔通道 `sendInterval`），发送成功立即推送 `success`；送达回执写入 RabbitMQ 延迟队列，到期后以 `sendStatus=delivered` 投递到 `observe.delivered`，再 HTTP 推送到 `chat-web-hooks-service`；失败回执仍立即推送。Hooks 再转发到回执队列，由 Dispatch 写回发送记录。Observe 不写库。
 
 | 项目          | 生产（Docker）                  | 本地开发                                    |
 | ------------- | ------------------------------- | ------------------------------------------- |
